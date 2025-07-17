@@ -835,24 +835,30 @@ struct MemoryDesc {
 
   AddressType addressType() const { return limits.addressType; }
 
+  PageSize pageSize() const { return PageSize::Standard; }
+
   // The initial length of this memory in pages.
-  Pages initialPages() const { return Pages(limits.initial); }
+  Pages initialPages() const {
+    return Pages::fromPageCount(limits.initial, pageSize());
+  }
 
   // The maximum length of this memory in pages.
   mozilla::Maybe<Pages> maximumPages() const {
-    return limits.maximum.map([](uint64_t x) { return Pages(x); });
+    return limits.maximum.map([&](uint64_t x) {
+      return Pages::fromPageCount(x, pageSize());
+    });
   }
 
   // The initial length of this memory in bytes. Only valid for memory32.
   uint64_t initialLength32() const {
     MOZ_ASSERT(addressType() == AddressType::I32);
     // See static_assert after MemoryDesc for why this is safe.
-    return limits.initial * StandardPageSize;
+    return initialPages().byteLength();
   }
 
   uint64_t initialLength64() const {
     MOZ_ASSERT(addressType() == AddressType::I64);
-    return limits.initial * StandardPageSize;
+    return initialPages().byteLength();
   }
 
   MemoryDesc() = default;

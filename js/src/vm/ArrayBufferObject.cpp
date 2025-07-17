@@ -802,7 +802,8 @@ bool ArrayBufferObject::resizeImpl(JSContext* cx, const CallArgs& args) {
       return false;
     }
 
-    Pages newPages = Pages::fromByteLengthExact(newByteLength);
+    Pages newPages = Pages::fromByteLengthExact(newByteLength,
+                                                wasm::PageSize::Standard);
     MOZ_RELEASE_ASSERT(WasmArrayBufferSourceMaxPages(obj).isSome());
     Rooted<ArrayBufferObject*> res(
         cx,
@@ -1587,8 +1588,9 @@ void WasmArrayRawBuffer::discard(size_t byteOffset, size_t byteLen) {
 
 /* static */
 WasmArrayRawBuffer* WasmArrayRawBuffer::AllocateWasm(
-    AddressType addressType, Pages initialPages, Pages clampedMaxPages,
-    const Maybe<Pages>& sourceMaxPages, const Maybe<size_t>& mapped) {
+    AddressType addressType, wasm::PageSize pageSize, Pages initialPages,
+    Pages clampedMaxPages, const Maybe<Pages>& sourceMaxPages,
+    const Maybe<size_t>& mapped) {
   // Prior code has asserted that initial pages is within our implementation
   // limits (wasm::MaxMemoryPages) and we can assume it is a valid size_t.
   MOZ_ASSERT(initialPages.hasByteLength());
@@ -1623,7 +1625,8 @@ WasmArrayRawBuffer* WasmArrayRawBuffer::AllocateWasm(
   uint8_t* header = base - sizeof(WasmArrayRawBuffer);
 
   auto rawBuf = new (header) WasmArrayRawBuffer(
-      addressType, base, clampedMaxPages, sourceMaxPages, mappedSize, numBytes);
+      addressType, pageSize, base, clampedMaxPages, sourceMaxPages, mappedSize,
+      numBytes);
   return rawBuf;
 }
 
@@ -1652,6 +1655,7 @@ template <typename ObjT, typename RawbufT>
 static ArrayBufferObjectMaybeShared* CreateSpecificWasmBuffer(
     JSContext* cx, const wasm::MemoryDesc& memory) {
   bool useHugeMemory = wasm::IsHugeMemoryEnabled(memory.addressType());
+  wasm::PageSize pageSize = memory.pageSize();
   Pages initialPages = memory.initialPages();
   Maybe<Pages> sourceMaxPages = memory.maximumPages();
   Pages clampedMaxPages = wasm::ClampedMaxPages(
@@ -1667,8 +1671,9 @@ static ArrayBufferObjectMaybeShared* CreateSpecificWasmBuffer(
 #endif
 
   RawbufT* buffer =
-      RawbufT::AllocateWasm(memory.limits.addressType, initialPages,
-                            clampedMaxPages, sourceMaxPages, mappedSize);
+      RawbufT::AllocateWasm(memory.limits.addressType, memory.pageSize(),
+                            initialPages, clampedMaxPages, sourceMaxPages,
+                            mappedSize);
   if (!buffer) {
     if (useHugeMemory) {
       WarnNumberASCII(cx, JSMSG_WASM_HUGE_MEMORY_FAILED);
@@ -1684,15 +1689,17 @@ static ArrayBufferObjectMaybeShared* CreateSpecificWasmBuffer(
     // chunk in the range [initialPages, clampedMaxPages) using log backoff.
     if (!sourceMaxPages) {
       wasm::Log(cx, "new Memory({initial=%" PRIu64 " pages}) failed",
-                initialPages.value());
+                initialPages.pageCount());
       ReportOutOfMemory(cx);
       return nullptr;
     }
 
-    uint64_t cur = clampedMaxPages.value() / 2;
-    for (; Pages(cur) > initialPages; cur /= 2) {
-      buffer = RawbufT::AllocateWasm(memory.limits.addressType, initialPages,
-                                     Pages(cur), sourceMaxPages, mappedSize);
+    uint64_t cur = clampedMaxPages.pageCount() / 2;
+    for (; cur > initialPages.pageCount(); cur /= 2) {
+      buffer = RawbufT::AllocateWasm(memory.limits.addressType, pageSize,
+                                     initialPages,
+                                     Pages::fromPageCount(cur, pageSize),
+                                     sourceMaxPages, mappedSize);
       if (buffer) {
         break;
       }
@@ -1700,7 +1707,7 @@ static ArrayBufferObjectMaybeShared* CreateSpecificWasmBuffer(
 
     if (!buffer) {
       wasm::Log(cx, "new Memory({initial=%" PRIu64 " pages}) failed",
-                initialPages.value());
+                initialPages.pageCount());
       ReportOutOfMemory(cx);
       return nullptr;
     }
@@ -1736,18 +1743,18 @@ static ArrayBufferObjectMaybeShared* CreateSpecificWasmBuffer(
       wasm::Log(cx,
                 "new Memory({initial:%" PRIu64 " pages, maximum:%" PRIu64
                 " pages}) succeeded",
-                initialPages.value(), sourceMaxPages->value());
+                initialPages.pageCount(), sourceMaxPages->pageCount());
     } else {
       wasm::Log(cx,
                 "new Memory({initial:%" PRIu64 " pages, maximum:%" PRIu64
                 " pages}) succeeded "
                 "with internal maximum of %" PRIu64 " pages",
-                initialPages.value(), sourceMaxPages->value(),
-                object->wasmClampedMaxPages().value());
+                initialPages.pageCount(), sourceMaxPages->pageCount(),
+                object->wasmClampedMaxPages().pageCount());
     }
   } else {
     wasm::Log(cx, "new Memory({initial:%" PRIu64 " pages}) succeeded",
-              initialPages.value());
+              initialPages.pageCount());
   }
 
   return object;
@@ -1756,7 +1763,8 @@ static ArrayBufferObjectMaybeShared* CreateSpecificWasmBuffer(
 ArrayBufferObjectMaybeShared* js::CreateWasmBuffer(
     JSContext* cx, const wasm::MemoryDesc& memory) {
   MOZ_RELEASE_ASSERT(memory.initialPages() <=
-                     wasm::MaxMemoryPages(memory.addressType()));
+                     wasm::MaxMemoryPages(memory.addressType(),
+                                          memory.pageSize()));
   MOZ_RELEASE_ASSERT(cx->wasm().haveSignalHandlers);
 
   if (memory.isShared()) {
@@ -1945,7 +1953,7 @@ Pages ArrayBufferObject::wasmPages() const {
     return contents().wasmBuffer()->pages();
   }
   MOZ_ASSERT(isPreparedForAsmJS());
-  return Pages::fromByteLengthExact(byteLength());
+  return Pages::fromByteLengthExact(byteLength(), wasm::PageSize::Standard);
 }
 
 Pages ArrayBufferObject::wasmClampedMaxPages() const {
@@ -1953,7 +1961,7 @@ Pages ArrayBufferObject::wasmClampedMaxPages() const {
     return contents().wasmBuffer()->clampedMaxPages();
   }
   MOZ_ASSERT(isPreparedForAsmJS());
-  return Pages::fromByteLengthExact(byteLength());
+  return Pages::fromByteLengthExact(byteLength(), wasm::PageSize::Standard);
 }
 
 Maybe<Pages> ArrayBufferObject::wasmSourceMaxPages() const {
@@ -1961,7 +1969,8 @@ Maybe<Pages> ArrayBufferObject::wasmSourceMaxPages() const {
     return contents().wasmBuffer()->sourceMaxPages();
   }
   MOZ_ASSERT(isPreparedForAsmJS());
-  return Some<Pages>(Pages::fromByteLengthExact(byteLength()));
+  return Some<Pages>(Pages::fromByteLengthExact(byteLength(),
+                                                wasm::PageSize::Standard));
 }
 
 size_t js::WasmArrayBufferMappedSize(const ArrayBufferObjectMaybeShared* buf) {
@@ -2125,9 +2134,11 @@ ArrayBufferObject* ArrayBufferObject::wasmMovingGrowToPages(
 
   Pages clampedMaxPages =
       wasm::ClampedMaxPages(t, newPages, Nothing(), /* hugeMemory */ false);
+  wasm::PageSize pageSize = wasm::PageSize::Standard;
   WasmArrayRawBuffer* newRawBuf =
-      WasmArrayRawBuffer::AllocateWasm(oldBuf->wasmAddressType(), newPages,
-                                       clampedMaxPages, Nothing(), Nothing());
+      WasmArrayRawBuffer::AllocateWasm(oldBuf->wasmAddressType(), pageSize,
+                                       newPages, clampedMaxPages, Nothing(),
+                                       Nothing());
   if (!newRawBuf) {
     return nullptr;
   }
