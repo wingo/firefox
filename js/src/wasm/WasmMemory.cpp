@@ -1,7 +1,7 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
  * vim: set ts=8 sts=2 et sw=2 tw=80:
  *
- * Copyright 2021 Mozilla Foundation
+ * Copyright 2021, 2025 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -395,7 +395,7 @@ Pages wasm::ClampedMaxPages(AddressType t, Pages initialPages,
     // "a lot of memory". Maintain the invariant that initialPages <=
     // clampedMaxPages.
     static const uint64_t OneGib = 1 << 30;
-    static const Pages OneGibPages = Pages(OneGib >> wasm::PageBits);
+    static const Pages OneGibPages = Pages(OneGib / wasm::PageSize);
     static_assert(HighestValidARMImmediate > OneGib,
                   "computing mapped size on ARM requires clamped max size");
 
