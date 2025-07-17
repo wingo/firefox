@@ -2859,9 +2859,28 @@ static bool DecodeLimits(Decoder& d, LimitsKind kind, Limits* limits) {
     limits->maximum.emplace(maximum);
   }
 
-  if (kind == LimitsKind::Memory)
-    limits->pageSize.emplace(PageSize::Standard);
+  if (kind == LimitsKind::Memory) {
+#ifdef ENABLE_WASM_CUSTOM_PAGE_SIZES
+    if (flags & uint8_t(LimitsFlags::HasCustomPageSize)) {
+      uint32_t customPageSize;
+      // FIXME: use some constants here?
+      if (!d.readVarU32(&customPageSize))
+        return d.fail("failed to decode custom page size");
 
+      if (customPageSize == static_cast<uint32_t>(PageSize::Standard)) {
+        limits->pageSize.emplace(PageSize::Standard);
+      } else if (customPageSize == static_cast<uint32_t>(PageSize::Tiny)) {
+        limits->pageSize.emplace(PageSize::Tiny);
+      } else {
+        return d.fail("bad custom page size");
+      }
+    } else {
+      limits->pageSize.emplace(PageSize::Standard);
+    }
+#else
+    limits->pageSize.emplace(PageSize::Standard);
+#endif // ENABLE_WASM_CUSTOM_PAGE_SIZES
+  }
   return true;
 }
 
